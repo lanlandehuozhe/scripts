@@ -47,24 +47,41 @@ if ($Baseline) {
     Write-Host "[3/8] Gateway..."
     $gw = "FAIL"
     try {
+        # Method 1: Get-NetRoute (may require admin)
         $route = Get-NetRoute -DestinationPrefix "0.0.0.0/0" -ErrorAction SilentlyContinue
         if ($route) { $gw = ($route | Select-Object -First 1).NextHop.IPAddressToString }
     } catch {}
-    if ($gw -eq "FAIL") {
+    if (($gw -eq "FAIL") -or ($gw -eq $null) -or ($gw -eq "")) {
+        # Method 2: route print
         $r = route print -4 | Select-String "0.0.0.0"
-        if ($r) { $gw = ($r[0] -split '\s+')[2] }
+        if ($r) {
+            foreach ($line in $r) {
+                $parts = ($line -split '\s+') | Where-Object { $_ -match '\d+\.\d+\.\d+\.\d+' }
+                if ($parts.Count -ge 2) { $gw = $parts[1]; break }
+            }
+        }
+    }
+    if (($gw -eq "FAIL") -or ($gw -eq $null) -or ($gw -eq "")) {
+        # Method 3: ipconfig
+        $ipcf = ipconfig | Select-String "默认网关|Default Gateway"
+        if ($ipcf) {
+            foreach ($line in $ipcf) {
+                if ($line -match '(\d+\.\d+\.\d+\.\d+)') { $gw = $matches[1]; break }
+            }
+        }
     }
 
     Write-Host "[4/8] Local IP..."
     $localIP = "FAIL"
-    try { 
+    try {
         $adapter = Get-NetRoute -DestinationPrefix "0.0.0.0/0" -ErrorAction SilentlyContinue
         if ($adapter) {
             $localIP = (Get-NetIPAddress -InterfaceIndex $adapter[0].InterfaceIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).IPAddress
         }
     } catch {}
-    if (-not $localIP -or $localIP -eq "FAIL") {
-        $localIP = (Get-WmiObject Win32_NetworkAdapterConfiguration | Where-Object { $_.IPEnabled -and $_.DefaultIPGateway }).IPAddress[0]
+    if (-not $localIP -or ($localIP -eq "FAIL") -or ($localIP -match ' ')) {
+        $wmi = Get-WmiObject Win32_NetworkAdapterConfiguration | Where-Object { $_.IPEnabled -and $_.DefaultIPGateway }
+        if ($wmi) { $localIP = $wmi[0].IPAddress[0] }
     }
 
     Write-Host "[5/8] DNS..."
@@ -92,10 +109,12 @@ if ($Baseline) {
     Write-Host "[8/8] Latency test..."
     $pingMs = "FAIL"
     $pingOut = ping -n 4 223.5.5.5 2>$null | Out-String
-    if ($pingOut -match "平均\s*=\s*(\d+)|Average\s*=\s*(\d+)") {
-        $pingMs = $matches[1]
-        if (-not $pingMs) { $pingMs = $matches[2] }
-    }
+    # Pattern 1: Chinese "平均 = 12ms"
+    if ($pingOut -match "平均.*?(\d+)\s*ms") { $pingMs = $matches[1] }
+    # Pattern 2: English "Average = 12ms"
+    elseif ($pingOut -match "Average.*?(\d+)\s*ms") { $pingMs = $matches[1] }
+    # Pattern 3: Minimum/Maximum/Average line
+    elseif ($pingOut -match "Minimum.*Maximum.*(\d+)") { $pingMs = $matches[1] }
 
     # Save baseline
 @"
@@ -154,13 +173,11 @@ if ($Monitor) {
     $pingMs = 9999
     $loss = 100
     $pingOut = ping -n 4 223.5.5.5 2>$null | Out-String
-    if ($pingOut -match "平均\s*=\s*(\d+)|Average\s*=\s*(\d+)") {
-        $pingMs = $matches[1]
-        if (-not $pingMs) { $pingMs = $matches[2] }
-    }
-    if ($pingOut -match "(\d+)%") {
-        $loss = $matches[1]
-    }
+    if ($pingOut -match "平均.*?(\d+)\s*ms") { $pingMs = $matches[1] }
+    elseif ($pingOut -match "Average.*?(\d+)\s*ms") { $pingMs = $matches[1] }
+    elseif ($pingOut -match "Minimum.*Maximum.*(\d+)") { $pingMs = $matches[1] }
+    $lossMatch = [regex]::Match($pingOut, '\d+(?=%)')
+    if ($lossMatch.Success) { $loss = $lossMatch.Value }
 
     # CSV append
     $ts = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
