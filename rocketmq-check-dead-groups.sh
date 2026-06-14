@@ -1,45 +1,31 @@
 #!/bin/bash
-# ============================================================
-# RocketMQ 死消费组检查脚本（check-dead-groups.sh）
-# 用途：扫描 Broker 日志，查找最后活跃时间超过 N 天的消费组
-# 环境：RocketMQ 4.9.3, BusyBox 容器
-# ============================================================
+# 检查 RocketMQ 死消费组，输出 ≥N 天无活动的 group 列表
+# 用法: bash rocketmq-check-dead-groups.sh [天数阈值，默认7]
+# 输出: 标准输出（可 pipe 给清理脚本）
+
 NAMESRV="101.43.255.136:9876"
-CLUSTER="rocketmq-cluster"
 CONTAINER="rocketmq-a"
-# 判断是否已死的天数阈值
-DEAD_DAYS=${1:-7}
+DEAD_DAYS="${1:-7}"
 
-echo "=== RocketMQ 死消费组检查 ==="
-echo "Namesrv: $NAMESRV | Cluster: $CLUSTER | 容器: $CONTAINER"
-echo "阈值: $DEAD_DAYS 天无活动视为死组"
-echo ""
-
-docker exec "$CONTAINER" bash -c "
-  NAMESRV='$NAMESRV'
-  MADMIN='bin/mqadmin'
-
-  echo '--- 正在分析 Broker 日志，提取每组最后活跃时间...'
-
-  grep -o 'consumerGroup=t8pkr_[a-z0-9_-]*' ~/logs/rocketmqlogs/broker.log |
+docker exec "$CONTAINER" sh -c '
+  DAYS='"$DEAD_DAYS"'
+  grep -oE "consumerGroup=t8pkr_[a-zA-Z0-9_-]+" ~/logs/rocketmqlogs/broker.log |
     sort -u |
-    while IFS='=' read _ group; do
-      last=\$(grep -F \"\$group\" ~/logs/rocketmqlogs/broker.log |
-            awk '{print \$1}' | tail -1)
-      echo \"\$last \$group\"
-    done | sort -k1 |
-    while read -r date group; do
-      # 计算距今天数
-      t=\$(date -d \"\$date\" +%s 2>/dev/null)
-      now=\$(date +%s)
-      days=\$(( (now - t) / 86400 ))
-      label=''
-      [ \$days -ge $DEAD_DAYS ] && label=' ← 死组'
-      echo \"[\$days天前] \$date \$group\$label\"
+    while IFS="=" read _ group; do
+      last_line=$(grep -F "consumerGroup=$group" ~/logs/rocketmqlogs/broker.log | tail -1)
+      last_date=$(echo "$last_line" | awk "{print \$1}")
+      t=$(date -d "$last_date" +%s 2>/dev/null)
+      now=$(date +%s)
+      days=$(( (now - t) / 86400 ))
+      echo "$days|$group|$last_date"
+    done' | sort -rn -t'|' -k1 | while IFS='|' read -r days group date; do
+      if [ "$days" -ge "$DEAD_DAYS" ]; then
+        echo "$group"
+        echo "  ← $days 天前 ($date)  ≥${DEAD_DAYS}天 → 死组" >&2
+      else
+        echo "  $days 天前 ($date)  活跃中，跳过" >&2
+      fi
     done
-"
-
-echo ""
-echo "=== 检查完成 ==="
-echo "标记 '← 死组' 的即为 ≥${DEAD_DAYS}天无活动的消费组"
-echo "如需清理，执行: bash clean-dead-groups.sh < group-list.txt"
+echo "" >&2
+echo "---" >&2
+echo "合计 $(docker exec "$CONTAINER" sh -c 'grep -oE "consumerGroup=t8pkr_" ~/logs/rocketmqlogs/broker.log | wc -l' 2>/dev/null) 条日志记录" >&2
