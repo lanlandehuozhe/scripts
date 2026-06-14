@@ -8,10 +8,10 @@
 
 param([switch]$Baseline, [switch]$Monitor)
 
-$BUCKET_URL = "https://a1-plr-1392076551.cos.ap-chengdu.myqcloud.com"
+$SPEEDTEST_URL = "https://a1-temp-1392076551.cos.ap-chengdu.myqcloud.com/speedtest/speedtest_5mb.bin"
 $BASELINE = "$env:USERPROFILE\.netdiag_baseline"
 $LOG = "$env:USERPROFILE\network_monitor.log"
-$TEST_FILE = "$env:TEMP\net_test_5mb.bin"
+$TEST_FILE = "$env:USERPROFILE\net_speedtest_dl.bin"
 $CSV_LOG = "$env:USERPROFILE\network_monitor.csv"
 
 # ======================== BASELINE ========================
@@ -74,26 +74,20 @@ if ($Baseline) {
         $dns = ($dnsList | Select-Object -First 2) -join ", "
     } catch {}
 
-    Write-Host "[6/8] Generating test file (5MB)..."
-    if (-not (Test-Path $TEST_FILE)) {
-        $f = [System.IO.File]::Create($TEST_FILE)
-        $f.SetLength(5*1024*1024)
-        $f.Close()
-    }
-
-    Write-Host "[7/8] Upload speed test (5MB to COS)..."
-    $upMbps = "FAIL"
+    Write-Host "[6/8] Speed test: downloading 5MB from COS..."
+    $dlSecs = -1
     try {
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-        $rand = "test_$(Get-Random)"
-        $url = "$BUCKET_URL/$rand"
         $wc = New-Object System.Net.WebClient
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
-        $wc.UploadFile($url, $TEST_FILE) | Out-Null
+        $wc.DownloadFile($SPEEDTEST_URL, $TEST_FILE)
         $sw.Stop()
-        $upSecs = $sw.Elapsed.TotalSeconds
-        $upMbps = "{0:N1}" -f (40.0 / $upSecs)
-    } catch { Write-Host "    [upload error] $_" }
+        $dlSecs = $sw.Elapsed.TotalSeconds
+    } catch { Write-Host "    [download error] $_" }
+
+    Write-Host "[7/8] Calculating speed..."
+    $netMbps = "FAIL"
+    if ($dlSecs -gt 0) { $netMbps = "{0:N1}" -f (40.0 / $dlSecs) }
 
     Write-Host "[8/8] Latency test..."
     $pingMs = "FAIL"
@@ -111,13 +105,13 @@ ISP=$isp
 GATEWAY=$gw
 LOCAL_IP=$localIP
 DNS=$dns
-UPLOAD_MBPS=$upMbps
+NET_MBPS=$netMbps
 PING_MS=$pingMs
-BW_ESTIMATE=${upMbps} Mbps
+BW_ESTIMATE=${netMbps} Mbps
 "@ | Out-File -FilePath $BASELINE -Encoding ASCII
 
     # Init CSV header
-    "Timestamp,Upload_Mbps,Latency_ms,PacketLoss_Pct" | Out-File -FilePath $CSV_LOG -Encoding ASCII
+    "Timestamp,Net_Mbps,Latency_ms,PacketLoss_Pct" | Out-File -FilePath $CSV_LOG -Encoding ASCII
 
     Clear-Host
     Write-Host "===========================================" -ForegroundColor Green
@@ -129,7 +123,7 @@ BW_ESTIMATE=${upMbps} Mbps
     Write-Host "  ISP:        $isp"
     Write-Host "  Gateway:    $gw"
     Write-Host "  Local IP:   $localIP"
-    Write-Host "  Upload:     $upMbps Mbps"
+    Write-Host "  Speed:      $netMbps Mbps"
     Write-Host "  Latency:    $pingMs ms"
     Write-Host "-------------------------------------------"
     Write-Host "  CSV log:    $CSV_LOG"
@@ -144,24 +138,16 @@ if ($Monitor) {
         exit 1
     }
 
-    # Ensure test file exists
-    if (-not (Test-Path $TEST_FILE)) {
-        $f = [System.IO.File]::Create($TEST_FILE)
-        $f.SetLength(5*1024*1024)
-        $f.Close()
-    }
-
-    # Upload test
-    $upMbps = 0
+    # Download speed test (5MB from COS)
+    $netMbps = 0
     try {
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-        $rand = "test_$(Get-Random)"
-        $url = "$BUCKET_URL/$rand"
         $wc = New-Object System.Net.WebClient
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
-        $wc.UploadFile($url, $TEST_FILE) | Out-Null
+        $wc.DownloadFile($SPEEDTEST_URL, $TEST_FILE)
         $sw.Stop()
-        $upMbps = [Math]::Round(40.0 / $sw.Elapsed.TotalSeconds, 1)
+        $secs = $sw.Elapsed.TotalSeconds
+        if ($secs -gt 0) { $netMbps = [Math]::Round(40.0 / $secs, 1) }
     } catch {}
 
     # Latency + packet loss
@@ -178,9 +164,9 @@ if ($Monitor) {
 
     # CSV append
     $ts = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    "$ts,$upMbps,$pingMs,$loss" | Out-File -FilePath $CSV_LOG -Encoding ASCII -Append
+    "$ts,$netMbps,$pingMs,$loss" | Out-File -FilePath $CSV_LOG -Encoding ASCII -Append
 
     # Alert
-    if ($upMbps -lt 1) { Write-Host "[ALERT] Upload speed < 1 Mbps at $ts" }
+    if ($netMbps -lt 1) { Write-Host "[ALERT] Speed < 1 Mbps at $ts" }
     if ($loss -gt 0) { Write-Host "[ALERT] Packet loss: ${loss}% at $ts" }
 }
