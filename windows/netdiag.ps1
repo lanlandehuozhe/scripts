@@ -9,7 +9,7 @@
 param([switch]$Baseline, [switch]$Monitor)
 
 $SPEEDTEST_URL = "https://a1-temp-1392076551.cos.ap-chengdu.myqcloud.com/speedtest/speedtest_5mb.bin"
-$BASELINE = "$env:USERPROFILE\.netdiag_baseline"
+$BL_FILE = "$env:USERPROFILE\.netdiag_baseline"
 $LOG = "$env:USERPROFILE\network_monitor.log"
 $TEST_FILE = "$env:USERPROFILE\net_speedtest_dl.bin"
 $CSV_LOG = "$env:USERPROFILE\network_monitor.csv"
@@ -57,7 +57,8 @@ if ($Baseline) {
         if ($r) {
             foreach ($line in $r) {
                 $parts = ($line -split '\s+') | Where-Object { $_ -match '\d+\.\d+\.\d+\.\d+' }
-                if ($parts.Count -ge 2) { $gw = $parts[1]; break }
+                $nz = @($parts) | Where-Object { $_ -ne '0.0.0.0' }
+                if ($nz.Count -ge 1) { $gw = $nz[0]; break }
             }
         }
     }
@@ -110,10 +111,10 @@ if ($Baseline) {
     $pingMs = "FAIL"
     $pingOut = ping -n 4 223.5.5.5 2>$null | Out-String
     # Pattern 1: Chinese "平均 = 12ms"
-    if ($pingOut -match "平均.*?(\d+)\s*ms") { $pingMs = $matches[1] }
-    # Pattern 2: English "Average = 12ms"
+    if ($pingOut -match "最短.*最长.*平均[^\d]*(\d+)") { $pingMs = $matches[1] }
+    elseif ($pingOut -match "Minimum.*Maximum.*Average[^\d]*(\d+)") { $pingMs = $matches[1] }
+    elseif ($pingOut -match "平均.*?(\d+)\s*ms") { $pingMs = $matches[1] }
     elseif ($pingOut -match "Average.*?(\d+)\s*ms") { $pingMs = $matches[1] }
-    # Pattern 3: Minimum/Maximum/Average line
     elseif ($pingOut -match "Minimum.*Maximum.*(\d+)") { $pingMs = $matches[1] }
 
     # Save baseline
@@ -127,7 +128,7 @@ DNS=$dns
 NET_MBPS=$netMbps
 PING_MS=$pingMs
 BW_ESTIMATE=${netMbps} Mbps
-"@ | Out-File -FilePath $BASELINE -Encoding ASCII
+"@ | Out-File -FilePath $BL_FILE -Encoding ASCII
 
     # Init CSV header
     "Timestamp,Net_Mbps,Latency_ms,PacketLoss_Pct" | Out-File -FilePath $CSV_LOG -Encoding ASCII
@@ -152,7 +153,7 @@ BW_ESTIMATE=${netMbps} Mbps
 
 # ======================== MONITOR ========================
 if ($Monitor) {
-    if (-not (Test-Path $BASELINE)) {
+    if (-not (Test-Path $BL_FILE)) {
         Write-Host "[ERROR] Run -Baseline first!"
         exit 1
     }
@@ -173,9 +174,10 @@ if ($Monitor) {
     $pingMs = 9999
     $loss = 100
     $pingOut = ping -n 4 223.5.5.5 2>$null | Out-String
-    if ($pingOut -match "平均.*?(\d+)\s*ms") { $pingMs = $matches[1] }
+    if ($pingOut -match "最短.*最长.*平均[^\d]*(\d+)") { $pingMs = $matches[1] }
+    elseif ($pingOut -match "Minimum.*Maximum.*Average[^\d]*(\d+)") { $pingMs = $matches[1] }
+    elseif ($pingOut -match "平均.*?(\d+)\s*ms") { $pingMs = $matches[1] }
     elseif ($pingOut -match "Average.*?(\d+)\s*ms") { $pingMs = $matches[1] }
-    elseif ($pingOut -match "Minimum.*Maximum.*(\d+)") { $pingMs = $matches[1] }
     $lossMatch = [regex]::Match($pingOut, '\d+(?=%)')
     if ($lossMatch.Success) { $loss = $lossMatch.Value }
 
