@@ -111,11 +111,16 @@ if ($Baseline) {
     $pingMs = "FAIL"
     $pingOut = ping -n 4 223.5.5.5 2>$null | Out-String
     # Pattern 1: Chinese "平均 = 12ms"
-    if ($pingOut -match "最短.*最长.*平均[^\d]*(\d+)") { $pingMs = $matches[1] }
-    elseif ($pingOut -match "Minimum.*Maximum.*Average[^\d]*(\d+)") { $pingMs = $matches[1] }
-    elseif ($pingOut -match "平均.*?(\d+)\s*ms") { $pingMs = $matches[1] }
-    elseif ($pingOut -match "Average.*?(\d+)\s*ms") { $pingMs = $matches[1] }
-    elseif ($pingOut -match "Minimum.*Maximum.*(\d+)") { $pingMs = $matches[1] }
+    # Try various ping output formats
+    $lines = $pingOut -split "`n"
+    foreach ($l in $lines) {
+        if ($l -match "平均[^\d]*(\d+)\s*ms") { $pingMs = $matches[1]; break }
+        if ($l -match "Average[^\d]*(\d+)\s*ms") { $pingMs = $matches[1]; break }
+    }
+    if ($pingMs -eq "FAIL" -and $lines -match "\d+ms") {
+        $ms = [regex]::Matches($pingOut, "(\d+)ms") | Select-Object -Last 1
+        if ($ms) { $pingMs = $ms.Groups[1].Value }
+    }
 
     # Save baseline
 @"
@@ -174,10 +179,15 @@ if ($Monitor) {
     $pingMs = 9999
     $loss = 100
     $pingOut = ping -n 4 223.5.5.5 2>$null | Out-String
-    if ($pingOut -match "最短.*最长.*平均[^\d]*(\d+)") { $pingMs = $matches[1] }
-    elseif ($pingOut -match "Minimum.*Maximum.*Average[^\d]*(\d+)") { $pingMs = $matches[1] }
-    elseif ($pingOut -match "平均.*?(\d+)\s*ms") { $pingMs = $matches[1] }
-    elseif ($pingOut -match "Average.*?(\d+)\s*ms") { $pingMs = $matches[1] }
+    $lines = $pingOut -split "`n"
+    foreach ($l in $lines) {
+        if ($l -match "平均[^\d]*(\d+)\s*ms") { $pingMs = $matches[1]; break }
+        if ($l -match "Average[^\d]*(\d+)\s*ms") { $pingMs = $matches[1]; break }
+    }
+    if ($pingMs -eq 9999 -and $lines -match "\d+ms") {
+        $ms = [regex]::Matches($pingOut, "(\d+)ms") | Select-Object -Last 1
+        if ($ms) { $pingMs = $ms.Groups[1].Value }
+    }
     $lossMatch = [regex]::Match($pingOut, '\d+(?=%)')
     if ($lossMatch.Success) { $loss = $lossMatch.Value }
 
