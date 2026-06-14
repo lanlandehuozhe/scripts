@@ -29,16 +29,17 @@ if ($Baseline) {
     Write-Host "[2/8] ISP..."
     $isp = "FAIL"
     try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
         $org = (Invoke-WebRequest -Uri "https://ipinfo.io/$publicIP/org" -UseBasicParsing -TimeoutSec 5).Content.Trim()
         if ($org -match "AS(\d+)") {
             $asn = $matches[1]
             switch ($asn) {
-                "4837"  { $isp = "中国联通 (AS$asn)" }
-                "4134"  { $isp = "中国电信 (AS$asn)" }
-                "9808"  { $isp = "中国移动 (AS$asn)" }
-                "4808"  { $isp = "中国联通 (AS$asn)" }
-                "4847"  { $isp = "中国电信 (AS$asn)" }
-                default { $isp = "AS$asn - $org" }
+                "4837"  { $isp = "China-Unicom AS$asn" }
+                "4134"  { $isp = "China-Telecom AS$asn" }
+                "9808"  { $isp = "China-Mobile AS$asn" }
+                "4808"  { $isp = "China-Unicom AS$asn" }
+                "4847"  { $isp = "China-Telecom AS$asn" }
+                default { $isp = "$org" }
             }
         } else { $isp = $org }
     } catch {}
@@ -83,22 +84,24 @@ if ($Baseline) {
     Write-Host "[7/8] Upload speed test (5MB to COS)..."
     $upMbps = "FAIL"
     try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
         $rand = "test_$(Get-Random)"
         $url = "$BUCKET_URL/$rand"
+        $wc = New-Object System.Net.WebClient
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
-        (New-Object System.Net.WebClient).UploadFile($url, $TEST_FILE)
+        $wc.UploadFile($url, $TEST_FILE) | Out-Null
         $sw.Stop()
         $upSecs = $sw.Elapsed.TotalSeconds
         $upMbps = "{0:N1}" -f (40.0 / $upSecs)
-    } catch {}
+    } catch { Write-Host "    [upload error] $_" }
 
     Write-Host "[8/8] Latency test..."
     $pingMs = "FAIL"
-    try {
-        $ping = Test-Connection -ComputerName "223.5.5.5" -Count 4 -Quiet:$false -ErrorAction SilentlyContinue
-        $avgTime = ($ping | Where-Object { $_.Status -eq 0 } | Measure-Object -Property ResponseTime -Average).Average
-        if ($avgTime) { $pingMs = "{0:N0}" -f $avgTime }
-    } catch {}
+    $pingOut = ping -n 4 223.5.5.5 2>$null | Out-String
+    if ($pingOut -match "平均\s*=\s*(\d+)|Average\s*=\s*(\d+)") {
+        $pingMs = $matches[1]
+        if (-not $pingMs) { $pingMs = $matches[2] }
+    }
 
     # Save baseline
 @"
@@ -151,10 +154,12 @@ if ($Monitor) {
     # Upload test
     $upMbps = 0
     try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
         $rand = "test_$(Get-Random)"
         $url = "$BUCKET_URL/$rand"
+        $wc = New-Object System.Net.WebClient
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
-        (New-Object System.Net.WebClient).UploadFile($url, $TEST_FILE)
+        $wc.UploadFile($url, $TEST_FILE) | Out-Null
         $sw.Stop()
         $upMbps = [Math]::Round(40.0 / $sw.Elapsed.TotalSeconds, 1)
     } catch {}
@@ -162,16 +167,14 @@ if ($Monitor) {
     # Latency + packet loss
     $pingMs = 9999
     $loss = 100
-    try {
-        $ping = Test-Connection -ComputerName "223.5.5.5" -Count 4 -Quiet:$false -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 0 }
-        if ($ping) {
-            $avg = ($ping | Measure-Object -Property ResponseTime -Average).Average
-            $pingMs = [Math]::Round($avg, 0)
-            $total = 4
-            $received = ($ping | Measure-Object).Count
-            $loss = [Math]::Round(100 * ($total - $received) / $total, 0)
-        }
-    } catch {}
+    $pingOut = ping -n 4 223.5.5.5 2>$null | Out-String
+    if ($pingOut -match "平均\s*=\s*(\d+)|Average\s*=\s*(\d+)") {
+        $pingMs = $matches[1]
+        if (-not $pingMs) { $pingMs = $matches[2] }
+    }
+    if ($pingOut -match "(\d+)%") {
+        $loss = $matches[1]
+    }
 
     # CSV append
     $ts = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
